@@ -1,7 +1,28 @@
-import { AES } from "./sjcl";
+/*
+  Functions related to the security of the user's account
+
+  Original source from the meganz webclient, but heavily modified to work with the codebase.
+
+  mega.nz - https://github.com/meganz/webclient
+*/
+
+import AES from "./js/sjcl";
 import { basePath, ultimate } from "./common";
-import { getIdWithSeed, api } from "./utils";
-import { decrypt_key } from "./crypto";
+import {
+  getIdWithSeed,
+  api,
+  stringToByteArray,
+  a32_to_str,
+  base64urlencode,
+  a32_to_base64,
+  rand,
+  base64_to_a32,
+  ab_to_base64,
+  base64_to_ab,
+  to8,
+} from "./utils";
+import { decrypt_key, encrypt_key } from "./js/crypto";
+import { deriveKey, init_key } from "./key";
 
 /** The number of iterations for the PPF (1-2 secs computation time) */
 const numOfIterations = 100000;
@@ -22,7 +43,8 @@ type UC2 = {
   v: 2; // Version of this protocol
 };
 
-export let u_k = create_u_k();
+export let u_k: Int32Array | Uint32Array = create_u_k();
+export let u_sid: string, u_k_aes: AES, u_storage: any, u_privk: any;
 
 export async function startLogin(
   email: string,
@@ -57,7 +79,7 @@ export async function startLogin(
   );
 
   // Authenticate with the API
-  sendAuthenticationKey(
+  return await sendAuthenticationKey(
     email,
     authenticationKeyBase64,
     derivedEncryptionKeyArray32
@@ -67,7 +89,7 @@ export async function startLogin(
 async function sendAuthenticationKey(
   email: string,
   authenticationKeyBase64: string,
-  derivedEncryptionKeyArray32: Int32Array
+  derivedEncryptionKeyArray32: any
 ) {
   // Setup the login request
   var requestVars = { a: "us", user: email, uh: authenticationKeyBase64 };
@@ -83,22 +105,15 @@ async function sendAuthenticationKey(
     body: JSON.stringify(requestVars),
   });
 
-  console.log(result);
   // Get values from Object
   var temporarySessionIdBase64 = result.tsid;
-  var encryptedSessionIdBase64 = result.csid;
+  // var encryptedSessionIdBase64 = result.csid; // undefined
   var encryptedMasterKeyBase64 = result.k;
-  var encryptedPrivateRsaKey = result.privk;
-  var userHandle = result.u;
+  // var encryptedPrivateRsaKey = result.privk; // undefined
+  // var userHandle = result.u;
 
   // Decrypt the Master Key
-  var encryptedMasterKeyArray32 = new Int32Array(
-    base64_to_a32(encryptedMasterKeyBase64).length
-  );
-  encryptedMasterKeyArray32.set(base64_to_a32(encryptedMasterKeyBase64));
-  var encryptedMasterKeyArray32 = new Int32Array(
-    base64_to_a32(encryptedMasterKeyBase64)
-  );
+  var encryptedMasterKeyArray32 = base64_to_a32(encryptedMasterKeyBase64);
   var cipherObject = new AES(derivedEncryptionKeyArray32);
   var decryptedMasterKeyArray32 = decrypt_key(
     cipherObject,
@@ -106,21 +121,13 @@ async function sendAuthenticationKey(
   );
 
   // If the temporary session ID is set then we need to generate RSA keys
-  console.log(temporarySessionIdBase64);
-  if (typeof temporarySessionIdBase64 !== "undefined") {
-    skipToGenerateRsaKeys(decryptedMasterKeyArray32, temporarySessionIdBase64);
-  } else {
-    // Otherwise continue a regular login
-    decryptRsaKeyAndSessionId(
-      decryptedMasterKeyArray32,
-      encryptedSessionIdBase64,
-      encryptedPrivateRsaKey,
-      userHandle
-    );
-  }
+  return await skipToGenerateRsaKeys(
+    decryptedMasterKeyArray32,
+    temporarySessionIdBase64
+  );
 }
 
-function skipToGenerateRsaKeys(
+async function skipToGenerateRsaKeys(
   masterKeyArray32: Int32Array,
   temporarySessionIdBase64: string
 ) {
@@ -132,12 +139,13 @@ function skipToGenerateRsaKeys(
   // Set the Session ID for future API requests
   api_setsid(temporarySessionIdBase64);
 
-  // Set to localStorage as well
-  u_storage.k = JSON.stringify(masterKeyArray32);
-  u_storage.sid = temporarySessionIdBase64;
-
   // Redirect to key generation page
-  loadSubPage("key");
+  return await init_key();
+}
+
+// Sets the Session ID for future API requests
+function api_setsid(tsid: string) {
+  u_sid = tsid;
 }
 
 export async function startRegistration(
@@ -168,7 +176,7 @@ export async function startRegistration(
 
 async function deriveKeysFromPassword(
   password: string,
-  masterKeyArray32: Uint32Array
+  masterKeyArray32: Uint32Array | Int32Array
 ) {
   // Create the 128 bit (16 byte) Client Random Value and Salt
   var saltLengthInBytes = saltLengthInBits / 8;
@@ -223,73 +231,6 @@ async function deriveKeysFromPassword(
   };
 }
 
-function deriveKey(
-  saltBytes: Uint8Array,
-  passwordBytes: Uint8Array,
-  iterations: number,
-  derivedKeyLength: number
-): Promise<Uint8Array> {
-  // If Web Crypto method supported, use that as it's nearly as fast as native
-  return deriveKeyWithWebCrypto(
-    saltBytes,
-    passwordBytes,
-    iterations,
-    derivedKeyLength
-  );
-  // Otherwise, use asmCrypto which is the next fastest
-  // return deriveKeyWithAsmCrypto(
-  //   saltBytes,
-  //   passwordBytes,
-  //   iterations,
-  //   derivedKeyLength
-  // );
-}
-
-function deriveKeyWithWebCrypto(
-  saltBytes: Uint8Array,
-  passwordBytes: Uint8Array,
-  iterations: number,
-  derivedKeyLength: number
-) {
-  // Import the password as the key
-  return crypto.subtle
-    .importKey("raw", passwordBytes, "PBKDF2", false, ["deriveBits"])
-    .then((key) => {
-      // Required PBKDF2 parameters
-      var params = {
-        name: "PBKDF2",
-        hash: "SHA-512",
-        salt: saltBytes,
-        iterations: iterations,
-      };
-
-      // Derive bits using the algorithm
-      return crypto.subtle.deriveBits(params, key, derivedKeyLength);
-    })
-    .then((derivedKeyArrayBuffer) => {
-      // Convert to a byte array
-      // Pass the derived key to the callback
-      return new Uint8Array(derivedKeyArrayBuffer);
-    });
-}
-
-// binary string to ArrayBuffer, 0-padded to AES block size
-function base64_to_ab(a: string) {
-  return str_to_ab(base64urldecode(a));
-}
-
-// binary string to ArrayBuffer, 0-padded to AES block size
-function str_to_ab(b: string) {
-  var ab = new ArrayBuffer((b.length + 15) & -16);
-  var u8 = new Uint8Array(ab);
-
-  for (var i = b.length; i--; ) {
-    u8[i] = b.charCodeAt(i);
-  }
-
-  return ab;
-}
-
 // If the user triggers an action that requires an account, but hasn't logged in,
 // we create an anonymous preliminary account. Returns userhandle and passwordkey for permanent storage.
 export async function api_createuser(
@@ -333,13 +274,6 @@ export async function api_createuser(
   });
 }
 
-// random number between 0 .. n -- based on repeated calls to rc
-function rand(n: number) {
-  let r = new Uint32Array(1);
-  crypto.getRandomValues(r);
-  return r[0] % n;
-}
-
 async function createSalt(
   clientRandomValueBytes: Uint8Array
 ): Promise<Uint8Array> {
@@ -368,130 +302,6 @@ async function createSalt(
 
   // Return the salt which is needed for the PPF
   return new Uint8Array(saltBytes);
-}
-
-function stringToByteArray(str: string) {
-  return new TextEncoder().encode(str);
-}
-
-function to8(unicode: string) {
-  return unescape(encodeURIComponent(unicode));
-}
-
-function base64urlencode(data: string) {
-  var b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=";
-  var b64a = b64.split("");
-  if (typeof btoa === "function") {
-    return btoa(data).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
-  }
-
-  var o1,
-    o2,
-    o3,
-    h1,
-    h2,
-    h3,
-    h4,
-    bits,
-    i = 0,
-    ac = 0,
-    enc = "",
-    tmp_arr = [];
-
-  do {
-    // pack three octets into four hexets
-    o1 = data.charCodeAt(i++);
-    o2 = data.charCodeAt(i++);
-    o3 = data.charCodeAt(i++);
-
-    bits = (o1 << 16) | (o2 << 8) | o3;
-
-    h1 = (bits >> 18) & 0x3f;
-    h2 = (bits >> 12) & 0x3f;
-    h3 = (bits >> 6) & 0x3f;
-    h4 = bits & 0x3f;
-
-    // use hexets to index into b64, and append result to encoded string
-    tmp_arr[ac++] = b64a[h1] + b64a[h2] + b64a[h3] + b64a[h4];
-  } while (i < data.length);
-
-  enc = tmp_arr.join("");
-  var r = data.length % 3;
-  return r ? enc.slice(0, r - 3) : enc;
-}
-
-function ab_to_base64(ab: ArrayBuffer) {
-  return base64urlencode(ab_to_str(ab));
-}
-
-function ab_to_str(ab: ArrayBuffer) {
-  var b = "",
-    i;
-  var ab8 = new Uint8Array(ab);
-
-  for (i = 0; i < ab8.length; i++) {
-    b = b + String.fromCharCode(ab8[i]);
-  }
-
-  return b;
-}
-
-export function a32_to_base64(a: Int32Array) {
-  return base64urlencode(a32_to_str(a));
-}
-
-function a32_to_str(a: Int32Array) {
-  var b = "";
-
-  for (var i = 0; i < a.length * 4; i++) {
-    b = b + String.fromCharCode((a[i >> 2] >>> (24 - (i & 3) * 8)) & 255);
-  }
-
-  return b;
-}
-
-function base64_to_a32(s: string): Int32Array {
-  return str_to_a32(base64urldecode(s)) as Int32Array;
-}
-
-export function base64urldecode(data: string) {
-  data += "==".substr((2 - data.length * 3) & 3);
-
-  data = data.replace(/\-/g, "+").replace(/_/g, "/").replace(/,/g, "");
-
-  try {
-    return atob(data);
-  } catch (e) {
-    return "";
-  }
-}
-
-// string to array of 32-bit words (big endian)
-export function str_to_a32(b: string): Int32Array {
-  var a = new Int32Array((b.length + 3) >> 2);
-  for (var i = 0; i < b.length; i++) {
-    a[i >> 2] |= b.charCodeAt(i) << (24 - (i & 3) * 8);
-  }
-  return a;
-}
-
-// encrypt/decrypt 4- or 8-element 32-bit integer array
-function encrypt_key(cipher: any, a: any) {
-  if (!a) {
-    a = [];
-  }
-  if (!cipher) {
-    console.error("No encryption cipher provided!");
-    return false;
-  }
-  if (a.length == 4) {
-    return cipher.encrypt(a);
-  }
-  var x: any[] = [];
-  for (var i = 0; i < a.length; i += 4) {
-    x = x.concat(cipher.encrypt([a[i], a[i + 1], a[i + 2], a[i + 3]]));
-  }
-  return x;
 }
 
 function create_u_k(): Uint32Array {

@@ -1,12 +1,59 @@
-import { base64urldecode } from "./security";
+/*
+  Contains functions for encrypting and decrypting data using RSA and AES ciphers.
 
-export async function crypto_rsagenkey2() {
+  TODO: Translate to TypeScript  
+
+  mega.nz - https://github.com/meganz/webclient
+*/
+
+import { u_setrsa } from "../key";
+
+export function encrypt_key(cipher, a) {
+  if (!a) {
+    a = [];
+  }
+  if (!cipher) {
+    console.error("No encryption cipher provided!");
+    return false;
+  }
+  if (a.length == 4) {
+    return cipher.encrypt(a);
+  }
+  var x = [];
+  for (var i = 0; i < a.length; i += 4) {
+    x = x.concat(cipher.encrypt([a[i], a[i + 1], a[i + 2], a[i + 3]]));
+  }
+  return x;
+}
+
+export function decrypt_key(cipher, a) {
+  if (!cipher) {
+    console.error("No decryption cipher provided!");
+    return false;
+  }
+  if (a.length == 4) {
+    return cipher.decrypt(a);
+  }
+
+  var x = [];
+  for (var i = 0; i < a.length; i += 4) {
+    x = x.concat(cipher.decrypt([a[i], a[i + 1], a[i + 2], a[i + 3]]));
+  }
+  return x;
+}
+
+/*
+  Very jank translation of what mega.nz uses to generate RSA keys.
+  
+  This might be completely wrong, but im not familiar enough with RSA to know for sure.
+*/
+export async function crypto_rsagenkey() {
   var ko = await crypto.subtle.generateKey(
     {
       name: "RSASSA-PKCS1-v1_5",
       modulusLength: 2048,
       publicExponent: new Uint8Array([1, 0, 1]),
-      hash: { name: "SHA-256" },
+      hash: { name: "SHA-256" }, // Mismatch between this and other hashes used in the code, issue with not using msCrypto
     },
     true,
     ["sign", "verify"]
@@ -18,17 +65,10 @@ export async function crypto_rsagenkey2() {
   delete ko.ext;
   delete ko.alg;
 
-  const ko2 = [ko.n, ko.e, ko.d, ko.p, ko.q, ko.dp, ko.dq, ko.qi];
-
-  var jwk = bytes_to_string(new Uint8Array(ko2));
-  console.log(ko2);
-  ["n", "e", "d", "p", "q", "dp", "dq", "qi"].map(function (x) {
-    return jwk[x];
-  });
-  return jwk;
+  return await u_setrsa([ko.n, ko.e, ko.d, ko.p, ko.q, ko.dp, ko.dq, ko.qi]);
 }
 
-function bytes_to_string(bytes, utf8 = false) {
+export function bytes_to_string(bytes, utf8 = false) {
   var len = bytes.length,
     chars = new Array(len);
 

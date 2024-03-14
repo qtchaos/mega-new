@@ -1,32 +1,24 @@
+import { startRegistration, api_createuser, startLogin } from "./security";
 import {
-  startRegistration,
-  api_createuser,
-  a32_to_base64,
-  str_to_a32,
-  u_k,
-  base64urldecode,
-  startLogin,
-} from "./security";
-import { createUrl, api, getEmailConfirmation } from "./utils";
+  createUrl,
+  api,
+  getEmailConfirmation,
+  generatePassword,
+} from "./utils";
 import {
   KeyStage1,
   KeyStage2,
-  KeyStage3,
   KeyStage4,
   RawAccount,
   Stage2,
   Stage3,
   Stage4,
   Stage5,
-  Stage6,
 } from "./types";
 import { setUltimate } from "./common";
 import Mailjs from "@cemalgnlts/mailjs";
-import { crypto_encodeprivkey, crypto_rsagenkey, encrypt_key } from "./crypto";
-import { crypto_rsagenkey2 } from "./crypto2";
-import { AES } from "./sjcl";
 
-let ph, sid, ut, k, a, user, ultimateUrl: string;
+let ph, sid, ut, user, ultimateUrl: string;
 
 async function generateAccount(raw: RawAccount) {
   // 1: Get user
@@ -38,7 +30,7 @@ async function generateAccount(raw: RawAccount) {
     body: JSON.stringify({ a: "us", user: user }),
   });
   sid = stage2.tsid;
-  k = stage2.k;
+  // k = stage2.k; // -> used in Stage 6
 
   // 3: get `ut`
   const stage3Url = createUrl(true, sid);
@@ -59,7 +51,7 @@ async function generateAccount(raw: RawAccount) {
   const stage5 = await api<Stage5>(ultimateUrl, {
     body: JSON.stringify({ a: "g", p: ph }),
   });
-  a = stage5.at;
+  // a = stage5.at; // -> used in Stage 6
 
   // 6: Might not be needed?
   // const stage6 = await api<Stage6>(ultimateUrl.toString(), {
@@ -90,7 +82,6 @@ async function generateAccount(raw: RawAccount) {
     body: JSON.stringify(account),
   });
 
-  console.info("Done registering, check your email.");
   return response === 0;
 }
 
@@ -99,56 +90,43 @@ async function setupKeys(
   timeout = 100,
   emailConfirmation: string
 ) {
-  let privk, pubk;
-
   // 0: Wait for server to be ready
   await new Promise((_) => setTimeout(_, timeout));
 
   // 1: Send confirmation code to the API
-  const stage1 = await api<KeyStage1>(ultimateUrl, {
+  await api<KeyStage1>(ultimateUrl, {
     body: JSON.stringify({ a: "ud2", c: emailConfirmation }),
   });
 
-  let [name, email, result] = stage1[1];
-  name = base64urldecode(name);
-  email = base64urldecode(email);
-  console.log(name, email, result);
-  console.info("Stage 1:", stage1);
+  // console.log("Stage 1 (confirmation code):", emailConfirmation);
 
-  // 2: Get keys
-  const stage2 = await fetchStage2();
-  async function fetchStage2() {
+  // 2: Get salt to be used in the next step
+  const stage2 = await getSalt();
+  async function getSalt() {
+    ``;
     const z = await api<KeyStage2>(ultimateUrl, {
       body: JSON.stringify({ a: "us0", user: account.email }),
     });
 
     // If the request failed, retry with a longer timeout
     if (!z.s || z.v == 1) {
-      await fetchStage2();
+      await getSalt();
     }
     return z;
   }
 
-  console.log("Stage 2 (salt):", stage2.s);
+  // console.log("Stage 2 (salt):", stage2.s);
 
+  // 3: Start the login process, which includes generating RSA keys for the account
   await startLogin(account.email, account.password, stage2.s);
 
-  // 3: Upload keys to api
-  const stage3 = await api<KeyStage3>(ultimateUrl, {
-    body: JSON.stringify({ a: "up", i: "LH/Dhn$", privk, pubk }),
-  });
-  console.log("Stage 3:", stage3);
+  // console.log("Stage 3 (keys):", k);
 
-  // if (!stage3[0]) throw new Error("Failed during stage 3 of key setup.");
-
-  // 4: Get data
-  const stage4 = await api<KeyStage4>(ultimateUrl, {
+  // 4: Get data from api
+  // NOTE: not sure if this is really necessary, but
+  await api<KeyStage4>(ultimateUrl, {
     body: JSON.stringify({ a: "ug" }),
   });
-
-  console.log("Stage 4:", stage4);
-
-  return {};
 }
 
 async function test() {
@@ -158,24 +136,18 @@ async function test() {
     firstName: "John",
     lastName: "Doe",
     email: mailAccount.data.username,
-    password: "semiautomatic",
+    password: generatePassword(),
   };
 
-  const u_k_aes = new AES(u_k);
-  const privateKeyEncoded = crypto_encodeprivkey(await crypto_rsagenkey2());
-  const privk = a32_to_base64(
-    encrypt_key(u_k_aes, str_to_a32(privateKeyEncoded))
-  );
-  console.log(privk);
-
+  console.log("Account:", account.email, account.password);
   console.time("Total");
 
-  // // 1: Register account and send email confirmation
+  // 1: Register account and send email confirmation
   console.time("Registration");
   await generateAccount(account).catch((error) => console.error(error));
   console.timeEnd("Registration");
 
-  // // 2: Get email confirmation id -> used in step 3
+  // 2: Get email confirmation id -> used in step 3
   console.time("Email");
   const e = await getEmailConfirmation({
     ...mailAccount.data,
@@ -183,7 +155,8 @@ async function test() {
   console.log("Email confirmation:", e.url);
   console.timeEnd("Email");
 
-  // // 3: Setup keys for account
+  // 3: Setup keys for account
+  // TODO: Send & generate keyrings
   console.time("Keys");
   await setupKeys(account, undefined, e.id).catch((error) =>
     console.error(error)

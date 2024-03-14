@@ -1,121 +1,56 @@
-/** @fileOverview Javascript cryptography implementation.
- *
- * Crush to remove comments, shorten variable names and
- * generally reduce transmission size.
- *
- * @author Emily Stark
- * @author Mike Hamburg
- * @author Dan Boneh
- *
- * Version 1.0.3
- */
+/*
+  Low-level AES implementation.
+  
+  MODIFIED FOR USE IN A MODERN NODE ENVIRONMENT. 3/14/2024
+  HAPPY PI DAY!
 
-/*jslint indent: 2, bitwise: false, nomen: false, plusplus: false, white: false, regexp: false */
-/*global document, window, escape, unescape, module, require, Uint32Array */
+  This file contains a low-level implementation of AES, optimized for
+  size and for efficiency on several browsers.  It is based on
+  OpenSSL's aes_core.c, a public-domain implementation by Vincent
+  Rijmen, Antoon Bosselaers and Paulo Barreto.
+ 
+  An older version of this implementation is available in the public
+  domain, but this one is (c) Emily Stark, Mike Hamburg, Dan Boneh,
+  Stanford University 2008-2010 and BSD-licensed for liability
+  reasons.
 
-/** @namespace The Stanford Javascript Crypto Library, top-level namespace. */
+  @author Emily Stark
+  @author Mike Hamburg
+  @author Dan Boneh
+*/
 
-interface Exception {
-  message: string;
-  toString: () => string;
-}
+/*
+  Schedule out an AES key for both encryption and decryption.  This
+  is a low-level class.  Use a cipher mode to do bulk encryption.
 
-interface Exceptions {
-  corrupt: (message: string) => Exception;
-  invalid: (message: string) => Exception;
-  bug: (message: string) => Exception;
-  notReady: (message: string) => Exception;
-}
-
-let exceptions: Exceptions = {
-  corrupt: function (message: string): Exception {
-    return {
-      message,
-      toString: function () {
-        return "CORRUPT: " + this.message;
-      },
-    };
-  },
-  invalid: function (message: string): Exception {
-    return {
-      message,
-      toString: function () {
-        return "INVALID: " + this.message;
-      },
-    };
-  },
-  bug: function (message: string): Exception {
-    return {
-      message,
-      toString: function () {
-        return "BUG: " + this.message;
-      },
-    };
-  },
-  notReady: function (message: string): Exception {
-    return {
-      message,
-      toString: function () {
-        return "NOT READY: " + this.message;
-      },
-    };
-  },
-};
-
-/** @fileOverview Low-level AES implementation.
- *
- * This file contains a low-level implementation of AES, optimized for
- * size and for efficiency on several browsers.  It is based on
- * OpenSSL's aes_core.c, a public-domain implementation by Vincent
- * Rijmen, Antoon Bosselaers and Paulo Barreto.
- *
- * An older version of this implementation is available in the public
- * domain, but this one is (c) Emily Stark, Mike Hamburg, Dan Boneh,
- * Stanford University 2008-2010 and BSD-licensed for liability
- * reasons.
- *
- * @author Emily Stark
- * @author Mike Hamburg
- * @author Dan Boneh
- */
-
-/**
- * Schedule out an AES key for both encryption and decryption.  This
- * is a low-level class.  Use a cipher mode to do bulk encryption.
- *
- * @constructor
- * @param {Array} key The key as an array of 4, 6 or 8 words.
- *
- * @class Advanced Encryption Standard (low-level interface)
- */
-export class AES {
-  _tables: number[][][];
-  _key: Int32Array | Uint32Array;
-  constructor(key: Int32Array | Uint32Array) {
+  @constructor
+  @param {Array} key The key as an array of 4, 6 or 8 words.
+*/
+class AES {
+  constructor(key) {
     this._tables = [
       [[], [], [], [], []],
       [[], [], [], [], []],
     ];
-
     if (!this._tables[0][0][0]) {
       this._precompute();
     }
 
-    let i,
+    var i,
       j,
       tmp,
-      encKey: Int32Array | Uint32Array,
-      decKey = [],
+      encKey,
+      decKey,
       sbox = this._tables[0][4],
       decTable = this._tables[1],
       keyLen = key.length,
       rcon = 1;
 
     if (keyLen !== 4 && keyLen !== 6 && keyLen !== 8) {
-      throw exceptions.invalid("invalid aes key size");
+      throw new Error("invalid aes key size");
     }
 
-    this._key = [(encKey = key.slice(0))];
+    this._key = [(encKey = key.slice(0)), (decKey = [])];
 
     // schedule encryption keys
     for (i = keyLen; i < 4 * keyLen + 28; i++) {
@@ -154,34 +89,19 @@ export class AES {
     }
   }
 
-  /**
-   * Encrypt an array of 4 big-endian words.
-   * @param {Array} data The plaintext.
-   * @return {Array} The ciphertext.
-   */
-  encrypt = (data: Int32Array): Int32Array => {
+  encrypt(data) {
     return this._crypt(data, 0);
-  };
+  }
 
-  /**
-   * Decrypt an array of 4 big-endian words.
-   * @param {Array} data The ciphertext.
-   * @return {Array} The plaintext.
-   */
-  decrypt = (data: Int32Array): Int32Array => {
+  decrypt(data) {
     return this._crypt(data, 1);
-  };
+  }
 
-  /**
-   * Expand the S-box tables.
-   *
-   * @private
-   */
-  _precompute = () => {
+  _precompute() {
     var encTable = this._tables[0],
       decTable = this._tables[1],
-      sbox: number[] = encTable[4],
-      sboxInv: number[] = decTable[4],
+      sbox = encTable[4],
+      sboxInv = decTable[4],
       i,
       x,
       xInv,
@@ -222,18 +142,11 @@ export class AES {
       encTable[i] = encTable[i].slice(0);
       decTable[i] = decTable[i].slice(0);
     }
-  };
+  }
 
-  /**
-   * Encryption and decryption core.
-   * @param {Array} input Four words to be encrypted or decrypted.
-   * @param dir The direction, 0 for encrypt and 1 for decrypt.
-   * @return {Array} The four encrypted or decrypted words.
-   * @private
-   */
-  _crypt = (input: Int32Array, dir: number): Int32Array => {
+  _crypt(input, dir) {
     if (input.length !== 4) {
-      throw exceptions.invalid("invalid aes block size");
+      throw new sjcl.exception.invalid("invalid aes block size");
     }
 
     var key = this._key[dir],
@@ -248,7 +161,7 @@ export class AES {
       nInnerRounds = key.length / 4 - 2,
       i,
       kIndex = 4,
-      out: Int32Array = new Int32Array(4),
+      out = [0, 0, 0, 0],
       table = this._tables[dir],
       // load up the tables
       t0 = table[0],
@@ -305,5 +218,7 @@ export class AES {
     }
 
     return out;
-  };
+  }
 }
+
+export default AES;
